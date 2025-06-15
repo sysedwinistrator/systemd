@@ -546,6 +546,37 @@ void sd_radv_remove_prefix(
         if (!ra || !prefix)
                 return;
 
+        /* Check if prefix exists */
+        sd_ndisc_option *p = ndisc_option_get(
+                        ra->options,
+                        &(const sd_ndisc_option) {
+                                .type = SD_NDISC_OPTION_PREFIX_INFORMATION,
+                                .prefix.prefixlen = prefixlen,
+                                .prefix.address = *prefix,
+                        });
+
+        /* Deprecate prefix by resending it with preferred_lifetime = 0 and valid_lifetime = 2h */
+        if (p) {
+                int r;
+                uint64_t two_hours = (uint64_t) 2 * 60 * 60 * 1000000;
+
+                r = ndisc_option_set_prefix(&ra->options, ND_OPT_PI_FLAG_ONLINK | ND_OPT_PI_FLAG_AUTO,
+                                            prefixlen, prefix, two_hours, 0, USEC_INFINITY, USEC_INFINITY);
+                if (r < 0) {
+                        log_radv_errno(ra, r, "Failed to deprecate IPv6 prefix %s",
+                                       IN6_ADDR_PREFIX_TO_STRING(prefix, prefixlen));
+                        goto remove_prefix;
+                }
+
+                log_radv(ra, "Sending unsolicited Router Advertisement to deprecate IPv6 prefix %s",
+                         IN6_ADDR_PREFIX_TO_STRING(prefix, prefixlen));
+                r = sd_radv_send(ra);
+                if (r < 0)
+                        log_radv_errno(ra, r, "Failed to send advertisement for deprecation of IPv6 prefix %s",
+                                       IN6_ADDR_PREFIX_TO_STRING(prefix, prefixlen));
+        }
+
+remove_prefix:
         ndisc_option_remove(ra->options,
                             &(sd_ndisc_option) {
                                     .type = SD_NDISC_OPTION_PREFIX_INFORMATION,
